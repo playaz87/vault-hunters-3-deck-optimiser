@@ -135,3 +135,7 @@ rebuild, and fix that one file if it no longer compiles.
 - `search/` – the annealing search; plain Java, unit tested.
 - `vault/VaultAdapter.java` – the only Vault-facing code.
 - `client/` – the binder button, the card cache and the panel.
+
+## Licence
+
+MIT. See [LICENSE](LICENSE).
