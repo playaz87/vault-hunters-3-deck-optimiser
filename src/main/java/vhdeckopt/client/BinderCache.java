@@ -50,7 +50,9 @@ final class BinderCache {
     private void commit(List<VaultAdapter.Seen> seen, int page) {
         for (VaultAdapter.Seen slot : seen) {
             ItemStack known = this.cards.get(slot.index());
-            if (known != null && !ItemStack.matches(known, slot.stack())) {
+            // Empty slots are ignored here: the binder pads the last page with empty
+            // storage slots, and those must not wipe the cards remembered from earlier pages.
+            if (known != null && VaultAdapter.isCard(slot.stack()) && !ItemStack.matches(known, slot.stack())) {
                 // The binder's contents moved under us; everything remembered may be stale.
                 this.cards.clear();
                 this.pages.clear();
