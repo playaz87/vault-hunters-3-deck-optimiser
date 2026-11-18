@@ -1,0 +1,58 @@
+name: Claude
+
+# Mention @claude in an issue (title, body or a comment) and Claude investigates,
+# writes up what it found on the issue, and opens a pull request with a fix.
+#
+# This is a public repository, so only the repository owner can start a run.
+# Mentions from anyone else are ignored: the job below is skipped for them.
+on:
+  issues:
+    types: [opened]
+  issue_comment:
+    types: [created]
+
+permissions: {}
+
+concurrency:
+  group: claude-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  claude:
+    # sender is whoever opened the issue or wrote the comment.
+    # The pull_request check keeps this to issues: comments on PRs also arrive as issue_comment.
+    if: >-
+      github.event.sender.login == github.repository_owner &&
+      !github.event.issue.pull_request &&
+      (
+        (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
+        (github.event_name == 'issues' &&
+          (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude')))
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      id-token: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+
+      # So Claude can build and run the tests before it opens the pull request.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+          cache: gradle
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # Only the owner's comments are passed to Claude. The issue's own text
+          # still is, whoever wrote it, so read an issue before mentioning Claude on it.
+          include_comments_by_actor: ${{ github.repository_owner }}
+          claude_args: |
+            --allowedTools "Bash(./gradlew:*),Bash(gh pr create:*),Bash(gh pr view:*),Bash(gh issue view:*)"
+            --append-system-prompt "For every request on an issue in this repository: first investigate the issue in the code and write your findings in your comment (cause, evidence with file and line references, and what you could not verify). Then, if a code change is warranted, make it on your branch, run './gradlew build --console=plain' and fix any failure, push, and open the pull request yourself with 'gh pr create' against the default branch, with 'Fixes #<issue number>' in the body. Link the pull request in your comment instead of a 'Create a PR' link. If no code change is warranted, say why and do not open a pull request. The Vault Hunters and Curios JARs are compile-only dependencies fetched by Gradle: never add them to the repository."
