@@ -11,6 +11,9 @@ import java.util.function.DoubleConsumer;
  * Simulated annealing with restarts, each finished by a greedy pass that
  * stops when no single move improves the layout. Returns the distinct local
  * optima found, best first.
+ *
+ * Required cards (Problem.required) are put into every starting layout, in
+ * the slots where they cost the least score, and no move may take them out.
  */
 public final class Annealer {
     public record Result(int[] layout, double score) {
@@ -23,6 +26,8 @@ public final class Annealer {
     private final int slots;
     private final int kinds;
     private final int[] current;
+    /** Fewest copies of each kind a layout must hold, capped at how many exist. */
+    private final int[] required;
     private final Random random;
     private final BooleanSupplier cancelled;
 
@@ -35,8 +40,36 @@ public final class Annealer {
         this.slots = problem.slotCount();
         this.kinds = problem.kindCount();
         this.current = problem.current().clone();
+        this.required = new int[this.kinds];
+        for (int kind = 0; kind < this.kinds; kind++) {
+            this.required[kind] = Math.max(0, Math.min(problem.required(kind), problem.available(kind)));
+        }
         this.random = new Random(seed);
         this.cancelled = cancelled;
+    }
+
+    /** How many copies of the kind the layout being worked on holds. */
+    private int used(int kind) {
+        return this.problem.available(kind) - this.left[kind];
+    }
+
+    /**
+     * How many required copies a layout is missing: 0 when every required card
+     * is in it. Above 0 means some required cards had no slot they may go in.
+     */
+    public static int missingRequired(Problem problem, int[] layout) {
+        int[] used = new int[problem.kindCount()];
+        for (int kind : layout) {
+            if (kind >= 0) {
+                used[kind]++;
+            }
+        }
+        int missing = 0;
+        for (int kind = 0; kind < used.length; kind++) {
+            int need = Math.min(problem.required(kind), problem.available(kind));
+            missing += Math.max(0, need - used[kind]);
+        }
+        return missing;
     }
 
     public static List<Result> run(Problem problem, int iterations, int restarts, long seed,
@@ -77,7 +110,39 @@ public final class Annealer {
                 this.left[kind]--;
             }
         }
+        this.placeRequired();
         this.value = this.objective();
+    }
+
+    /**
+     * Adds any required copies the layout is missing, one at a time, each into
+     * the slot where it costs the least score. A slot holding a required card
+     * that is not spare is never used. Copies with no usable slot are skipped.
+     */
+    private void placeRequired() {
+        for (int kind = 0; kind < this.kinds; kind++) {
+            while (this.used(kind) < this.required[kind] && !this.cancelled.getAsBoolean()) {
+                int bestSlot = -1;
+                double bestValue = Double.NEGATIVE_INFINITY;
+                for (int slot = 0; slot < this.slots; slot++) {
+                    int old = this.layout[slot];
+                    if (old == kind || !this.problem.allowed(slot, kind) || old >= 0 && this.used(old) <= this.required[old]) {
+                        continue;
+                    }
+                    this.replaceUnchecked(slot, kind);
+                    double next = this.objective();
+                    this.replaceUnchecked(slot, old);
+                    if (next > bestValue) {
+                        bestValue = next;
+                        bestSlot = slot;
+                    }
+                }
+                if (bestSlot < 0) {
+                    break;
+                }
+                this.replaceUnchecked(bestSlot, kind);
+            }
+        }
     }
 
     private double objective() {
@@ -140,13 +205,19 @@ public final class Annealer {
         return true;
     }
 
-    /** Puts kind (or -1 for empty) into the slot, returning the old card to the pool. */
+    /**
+     * Puts kind (or -1 for empty) into the slot, returning the old card to the
+     * pool. Refused if it would leave fewer copies of a required card than needed.
+     */
     private boolean replace(int slot, int kind) {
         int old = this.layout[slot];
         if (old == kind) {
             return false;
         }
         if (kind >= 0 && (this.left[kind] <= 0 || !this.problem.allowed(slot, kind))) {
+            return false;
+        }
+        if (old >= 0 && this.used(old) <= this.required[old]) {
             return false;
         }
         if (old >= 0) {

@@ -141,6 +141,113 @@ class AnnealerTest {
         assertArrayEquals(new int[]{0, 1, -1}, results.get(0).layout());
     }
 
+    /**
+     * Four open slots. Kind 0 is worth 1 each (four exist). Kind 1 is a
+     * "resource card": worth nothing, one exists. Kind 2 is worth 1 but may only
+     * go in slot 0. Kind 3 may go nowhere.
+     */
+    private static final class Pool implements Problem {
+        final int[] need;
+        final int[] start = {-1, -1, -1, -1};
+
+        Pool(int... need) {
+            this.need = need;
+        }
+
+        public int slotCount() {
+            return 4;
+        }
+
+        public int kindCount() {
+            return 4;
+        }
+
+        public int available(int kind) {
+            return new int[]{4, 1, 1, 1}[kind];
+        }
+
+        public boolean allowed(int slot, int kind) {
+            return kind == 2 ? slot == 0 : kind != 3;
+        }
+
+        public int required(int kind) {
+            return kind < this.need.length ? this.need[kind] : 0;
+        }
+
+        public int[] current() {
+            return this.start;
+        }
+
+        public double score(int[] layout) {
+            double total = 0.0;
+            for (int kind : layout) {
+                total += kind == 0 || kind == 2 ? 1.0 : 0.0;
+            }
+            return total;
+        }
+    }
+
+    private static int count(int[] layout, int kind) {
+        int n = 0;
+        for (int k : layout) {
+            if (k == kind) {
+                n++;
+            }
+        }
+        return n;
+    }
+
+    @Test
+    void withoutRequirementsAWorthlessCardIsLeftOut() {
+        for (Annealer.Result result : Annealer.run(new Pool(), 2000, 3, 5L, () -> false, p -> {
+        })) {
+            assertEquals(0, count(result.layout(), 1));
+        }
+    }
+
+    @Test
+    void keepsARequiredCardThatScoresNothing() {
+        Pool pool = new Pool(0, 1);
+        List<Annealer.Result> results = Annealer.run(pool, 2000, 4, 11L, () -> false, p -> {
+        });
+        assertFalse(results.isEmpty());
+        for (Annealer.Result result : results) {
+            assertEquals(1, count(result.layout(), 1), "the required card is in every layout");
+            assertEquals(0, Annealer.missingRequired(pool, result.layout()));
+        }
+        assertEquals(3.0, results.get(0).score(), 1.0e-9);
+    }
+
+    @Test
+    void putsARequiredCardInTheOnlySlotItFits() {
+        Pool pool = new Pool(0, 1, 1);
+        for (Annealer.Result result : Annealer.run(pool, 2000, 3, 13L, () -> false, p -> {
+        })) {
+            assertEquals(2, result.layout()[0]);
+            assertEquals(1, count(result.layout(), 1));
+        }
+    }
+
+    @Test
+    void reportsARequiredCardWithNowhereToGo() {
+        Pool pool = new Pool(0, 0, 0, 1);
+        List<Annealer.Result> results = Annealer.run(pool, 500, 2, 17L, () -> false, p -> {
+        });
+        assertFalse(results.isEmpty());
+        assertEquals(1, Annealer.missingRequired(pool, results.get(0).layout()));
+        assertEquals(4.0, results.get(0).score(), 1.0e-9);
+    }
+
+    @Test
+    void neverAsksForMoreCopiesThanExist() {
+        Pool pool = new Pool(0, 5);
+        for (Annealer.Result result : Annealer.run(pool, 1000, 2, 19L, () -> false, p -> {
+        })) {
+            assertEquals(1, count(result.layout(), 1));
+            assertEquals(0, Annealer.missingRequired(pool, result.layout()));
+        }
+    }
+
     @Test
     void stopsWhenCancelled() {
         List<Annealer.Result> results = Annealer.run(new Grid(), 1_000_000, 50, 3L, () -> true, p -> {
