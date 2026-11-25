@@ -12,11 +12,16 @@ import iskallia.vault.core.card.CardEntry;
 import iskallia.vault.core.card.CardPos;
 import iskallia.vault.core.card.modifier.card.CardModifier;
 import iskallia.vault.core.card.modifier.card.GreedCardModifier;
+import iskallia.vault.core.card.modifier.deck.BountyDeckModifier;
+import iskallia.vault.core.card.modifier.deck.DeckModifier;
+import iskallia.vault.core.card.modifier.deck.ISlotModifier;
+import iskallia.vault.core.random.JavaRandom;
 import iskallia.vault.gear.attribute.VaultGearAttribute;
 import iskallia.vault.gear.attribute.VaultGearAttributeInstance;
 import iskallia.vault.gear.attribute.VaultGearModifier;
 import iskallia.vault.item.CardDeckItem;
 import iskallia.vault.item.CardItem;
+import iskallia.vault.item.DeckSocketItem;
 import java.io.Reader;
 import java.lang.reflect.Method;
 import java.nio.file.Files;
@@ -43,6 +48,7 @@ import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.inventory.AbstractContainerMenu;
 import net.minecraft.world.inventory.Slot;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.TooltipFlag;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraftforge.fml.loading.FMLPaths;
 import top.theillusivec4.curios.api.CuriosApi;
@@ -66,6 +72,14 @@ import vhdeckopt.Weights;
  *  - CardEntry.getModifier().getSnapshotAttributes(tier)
  *  - Arcane rule: slots whose CardPos.allowedGroups has "Arcane" take only cards
  *    with the "Arcane" group, and other slots refuse them (DeckSlot.mayPlace)
+ *  - Deck cores: DeckSocketItem.getDeckModifier(stack); CardDeck.getModifiers,
+ *    getSocketCount, getMatchingModifier, addModifier(modifier, JavaRandom),
+ *    getModifiersOfType; DeckModifier.isBetter; CardDeckItem.setCardDeck.
+ *    The socketing rule copies DeckSocketAnvilRecipe.onCraft. Cores implementing
+ *    ISlotModifier roll their slots when socketed.
+ *  - BountyDeckModifier.test(deck): whether the layout meets a Bounty core's condition
+ *  - CardDeck.addText(lines, lines.size(), flag, tick): the deck tooltip, as
+ *    CardDeckItem.appendHoverText calls it
  */
 public final class VaultAdapter {
     private static final String ARCANE = "Arcane";
@@ -109,31 +123,60 @@ public final class VaultAdapter {
 
     /**
      * A deck the optimizer can be run for: a real deck item (in the binder,
-     * equipped, or in the inventory), or an empty deck of a type from the pack's
-     * deck config, for trying a shape the player does not own.
+     * equipped, or in the inventory), the same deck with a core from the
+     * inventory socketed into it as a trial, or an empty deck of a type from
+     * the pack's deck config, for trying a shape the player does not own.
+     *
+     * @param source the real deck item this choice comes from (the same object
+     *               for a deck and its core trials); ItemStack.EMPTY for previews
+     * @param core   the trial core's name, or null when no core is being tried
+     * @param coreRollsSlots true when the core picks its slots at random when
+     *               socketed, so the real result can differ from the trial
      */
-    public record DeckChoice(String label, ItemStack stack, String[] layout, boolean inBinder) {
+    public record DeckChoice(String label, ItemStack stack, String[] layout, boolean inBinder,
+                             ItemStack source, String core, boolean coreRollsSlots) {
         public boolean isPreview() {
             return this.layout != null;
         }
+
+        /** A real deck with a core added that it does not have yet. Only a what-if: it cannot be applied. */
+        public boolean isCoreTrial() {
+            return this.core != null;
+        }
     }
 
-    /** Real decks first (binder slot, equipped, inventory), then every deck type in the pack config. */
+    /**
+     * Real decks first (binder slot, equipped, inventory), each followed by a
+     * trial of every core in the inventory it could take, then every deck type
+     * in the pack config.
+     */
     public static List<DeckChoice> deckChoices(AbstractContainerMenu menu, Player player) {
-        List<DeckChoice> choices = new ArrayList<>();
+        List<DeckChoice> real = new ArrayList<>();
         for (Slot slot : menu.slots) {
             if (slot instanceof CardBinderContainer.CardDeckInputSlot && isDeck(slot.getItem())) {
-                choices.add(real("In binder", slot.getItem(), true));
+                real.add(real("In binder", slot.getItem(), true));
             }
         }
+        List<ItemStack> cores = new ArrayList<>();
         if (player != null) {
             ItemStack equipped = equippedDeck(player);
             if (isDeck(equipped)) {
-                choices.add(real("Equipped", equipped, false));
+                real.add(real("Equipped", equipped, false));
             }
             for (ItemStack stack : player.getInventory().items) {
                 if (isDeck(stack)) {
-                    choices.add(real("Inventory", stack, false));
+                    real.add(real("Inventory", stack, false));
+                }
+            }
+            cores = cores(player.getInventory().items);
+        }
+        List<DeckChoice> choices = new ArrayList<>();
+        for (DeckChoice deck : real) {
+            choices.add(deck);
+            for (ItemStack core : cores) {
+                DeckChoice trial = coreTrial(deck, core);
+                if (trial != null) {
+                    choices.add(trial);
                 }
             }
         }
@@ -147,7 +190,48 @@ public final class VaultAdapter {
     }
 
     private static DeckChoice real(String where, ItemStack stack, boolean inBinder) {
-        return new DeckChoice(where + ": " + stack.getHoverName().getString(), stack.copy(), null, inBinder);
+        ItemStack copy = stack.copy();
+        return new DeckChoice(where + ": " + stack.getHoverName().getString(), copy, null, inBinder, copy, null, false);
+    }
+
+    /** The distinct deck cores (the_vault:deck_socket items holding a modifier) among these stacks. */
+    private static List<ItemStack> cores(List<ItemStack> stacks) {
+        Map<String, ItemStack> distinct = new LinkedHashMap<>();
+        for (ItemStack stack : stacks) {
+            if (!stack.isEmpty() && stack.getItem() instanceof DeckSocketItem && DeckSocketItem.getDeckModifier(stack).isPresent()) {
+                distinct.putIfAbsent(String.valueOf(stack.getTag()), stack);
+            }
+        }
+        return new ArrayList<>(distinct.values());
+    }
+
+    /**
+     * The deck with this core socketed into a copy of it, or null if the core
+     * could not go in. Uses the anvil's rule: a core that matches one already in
+     * the deck must be better than it and replaces it; any other core needs a
+     * free socket.
+     */
+    private static DeckChoice coreTrial(DeckChoice deck, ItemStack core) {
+        try {
+            DeckModifier<?> modifier = DeckSocketItem.getDeckModifier(core).orElse(null);
+            ItemStack copy = deck.stack().copy();
+            CardDeck cards = CardDeckItem.getCardDeck(copy).orElse(null);
+            if (modifier == null || cards == null) {
+                return null;
+            }
+            DeckModifier<?> matching = cards.getMatchingModifier(modifier).orElse(null);
+            boolean fits = matching == null ? cards.getModifiers().size() < cards.getSocketCount() : modifier.isBetter(matching);
+            if (!fits) {
+                return null;
+            }
+            // Rolled once here, so every evaluator scores the same trial deck.
+            cards.addModifier(modifier, JavaRandom.ofNanoTime());
+            CardDeckItem.setCardDeck(copy, cards);
+            String name = core.getHoverName().getString();
+            return new DeckChoice(deck.label() + " + " + name, copy, null, false, deck.source(), name, modifier instanceof ISlotModifier);
+        } catch (RuntimeException e) {
+            return null;
+        }
     }
 
     /**
@@ -182,7 +266,8 @@ public final class VaultAdapter {
                     }
                     if (slots > 0) {
                         String variant = layouts.size() > 1 ? " #" + number : "";
-                        out.add(new DeckChoice("Preview: " + name + variant + " (" + slots + " slots, empty)", ItemStack.EMPTY, lines, false));
+                        out.add(new DeckChoice("Preview: " + name + variant + " (" + slots + " slots, empty)", ItemStack.EMPTY, lines, false,
+                            ItemStack.EMPTY, null, false));
                     }
                 }
             }
@@ -234,8 +319,10 @@ public final class VaultAdapter {
             current[slot] = card == null || card.getEntries().isEmpty() ? -1 : problem.addCard(CardItem.create(card), "This deck");
         }
         problem.current = current;
+        problem.hasCoreConditions = !live.getModifiersOfType(BountyDeckModifier.class).isEmpty();
         for (DeckChoice other : all) {
-            if (other == choice || other.isPreview()) {
+            // Core trials are copies of a real deck: their cards are that deck's cards, counted once.
+            if (other.isPreview() || other.isCoreTrial() || other.source() == choice.source()) {
                 continue;
             }
             CardDeck otherDeck = buildDeck(other);
@@ -459,6 +546,15 @@ public final class VaultAdapter {
     }
 
     /**
+     * A card's identity as text: identical cards give the same id wherever they
+     * are. Null if the stack is not a real card. Used to remember required cards.
+     */
+    public static String cardId(ItemStack stack) {
+        CompoundTag key = cardKey(stack);
+        return key == null ? null : key.toString();
+    }
+
+    /**
      * A card's identity: its data after a read/write round trip through the Vault
      * code, so the same card compares equal whether it came from a deck, the
      * binder or an inventory, on the client or the server. Null if not a real card.
@@ -498,6 +594,10 @@ public final class VaultAdapter {
         private final List<String> attributeKeys = new ArrayList<>();
         private double[] norms = new double[0];
         private int[] current = new int[0];
+        /** The deck holds a core with a condition on the layout (a Bounty core). */
+        private boolean hasCoreConditions;
+        /** Index of Weights.CORE_CONDITIONS in attributeKeys, or -1. */
+        private int coreConditionIndex = -1;
 
         private final DeckChoice choice;
 
@@ -557,6 +657,11 @@ public final class VaultAdapter {
                 }
                 kind.nonStat = !givesStat;
             }
+            if (this.hasCoreConditions) {
+                this.coreConditionIndex = this.attributeKeys.size();
+                this.attributeKeys.add(Weights.CORE_CONDITIONS);
+                largest.add(1.0);
+            }
             this.attributeKeys.add(Weights.NON_STAT_CARDS);
             largest.add(1.0);
             this.norms = new double[largest.size()];
@@ -601,6 +706,22 @@ public final class VaultAdapter {
             return this.kinds.get(kind).stack;
         }
 
+        /** The kind's card id, as given by VaultAdapter.cardId. */
+        public String kindId(int kind) {
+            return this.kinds.get(kind).key.toString();
+        }
+
+        /** The kind with this card id, or -1 if no known card has it. */
+        public int kindOf(String cardId) {
+            Integer kind = this.kindByKey.get(cardId);
+            return kind == null ? -1 : kind;
+        }
+
+        /** The choice this problem was captured from. */
+        public DeckChoice choice() {
+            return this.choice;
+        }
+
         /** For example "Deck x1, Binder p.3 x2". */
         public String kindSources(int kind) {
             StringBuilder out = new StringBuilder();
@@ -631,7 +752,11 @@ public final class VaultAdapter {
             return out;
         }
 
-        /** Attribute ids, in the order used by Evaluator.totals(). The last is Weights.NON_STAT_CARDS. */
+        /**
+         * Attribute ids, in the order used by Evaluator.totals(). The last is
+         * Weights.NON_STAT_CARDS; Weights.CORE_CONDITIONS comes just before it
+         * when the deck holds a core with a condition.
+         */
         public List<String> attributeKeys() {
             return this.attributeKeys;
         }
@@ -718,7 +843,25 @@ public final class VaultAdapter {
                     totals[index] += numeric(instance.getValue());
                 }
             }
+            if (this.problem.coreConditionIndex >= 0) {
+                for (BountyDeckModifier bounty : this.deck.getModifiersOfType(BountyDeckModifier.class)) {
+                    if (bounty.test(this.deck)) {
+                        totals[this.problem.coreConditionIndex] += 1.0;
+                    }
+                }
+            }
             return totals;
+        }
+
+        /**
+         * The deck's own tooltip text for a layout, exactly as the game builds it
+         * (stats, card effects, sockets and modifiers). Client thread only.
+         */
+        public List<Component> deckText(int[] layout) {
+            this.place(layout);
+            List<Component> lines = new ArrayList<>();
+            this.deck.addText(lines, lines.size(), TooltipFlag.Default.NORMAL, 0.0F);
+            return lines;
         }
 
         /** The game's own wording for each attribute of a layout, keyed by attribute id. Client thread only. */

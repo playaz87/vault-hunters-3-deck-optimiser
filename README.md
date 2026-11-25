@@ -50,21 +50,83 @@ allowed there.
 The panel shows:
 
 - **Buttons** along the top: **Re-run**, **Rescan** (read the decks and cards
-  again) and **Close** (or press Escape).
+  again), **Deck stats** / **Weights** (switch the right-hand side) and
+  **Close** (or press Escape).
 - **Deck picker**: `<` `>` (or scroll over it) switches which deck is being
   optimized. Your own decks come first: the one in the binder, the one
-  equipped, and any in your inventory. After those comes an empty deck of every
+  equipped, and any in your inventory. Each is followed, in green, by a trial
+  of every deck core in your inventory it could take (see
+  [Trying a core](#trying-a-core)). After those comes an empty deck of every
   type in the pack's `config/the_vault/card/decks.json`, shown in blue, so you
   can see how your cards would do in a shape you do not own. Previews have no
-  deck modifiers, and deck types the config marks as unobtainable are left out.
+  cores, and deck types the config marks as unobtainable are left out.
   Cards sitting in your other decks count as available.
 - **Layouts by weighted score**: the current deck and up to five suggestions,
   with the score gain and how many slots differ. Click one to view it.
+- **Required cards**: cards every suggestion must hold (see
+  [Required cards](#required-cards)).
 - **The deck grid** for the selected layout. Slots outlined in yellow differ
-  from the current deck. Hover a card to see where it was found.
-- **Attributes**: every attribute your cards can give, its weight, and its
-  total now and in the selected layout. Hover a row for the game's own wording.
-  Use `-` / `+` to change a weight (shift-click for steps of 1), then **Re-run**.
+  from the current deck; a gold corner marks a required card. Hover a card to
+  see where it was found; click it to require it (or stop requiring it).
+- **Attributes** (the **Weights** view): every attribute your cards can give,
+  its weight, its cap, and its total now and in the selected layout. Hover a
+  row for the game's own wording. Use `-` / `+` to change a weight (shift-click
+  for steps of 1), or click the weight or the cap to type a number (Enter
+  saves, Escape cancels), then **Re-run**.
+- **Deck stats**: the deck's own tooltip text (stats, card effects, sockets and
+  cores) for the current deck beside the selected layout, exactly as the game
+  writes it.
+
+## Required cards
+
+Some cards score nothing but you still want them in the deck: resource and
+task cards, or the resource cards a Bounty core needs. Mark them as required
+and every suggestion keeps them, placed where they cost the least score.
+
+- In the binder (with the panel closed), **Alt+click** a card in the binder or
+  your inventory. Required cards get a gold outline. Alt+click again to stop.
+- In the panel, click a card in the deck grid.
+- Under **Required cards** in the panel, `-` / `+` set how many copies are
+  required.
+
+Marking one card marks every identical copy. Required cards are remembered
+until the game closes. Press **Re-run** after changing them.
+
+If a required card cannot go in (for example an arcane card with no free
+arcane slot), the panel says how many did not fit. A required card you have
+not shown the mod (not in a deck, a binder page you looked at, or your
+inventory) is listed as not found.
+
+## Caps
+
+Some stats stop helping past a limit. Give an attribute a **cap** and anything
+above it scores nothing, so the search stops stacking it and spends the slots
+elsewhere. Click the attribute's cap cell and type the largest total that
+still counts, in the same units as the totals beside it. Leave it empty for no
+cap. A total over its cap is shown in orange with a `*`.
+
+Caps only look at the deck. Stats from your gear are not counted yet, so if
+your gear already gives some of a capped stat, set the deck's cap to what is
+left.
+
+## Trying a core
+
+A deck with a free socket can take a deck core (a `the_vault:deck_socket`
+item). Keep the cores you want to compare in your inventory: the deck picker
+then offers each one the deck could take as a green trial, such as
+"In binder: Starter Deck + Crimson Core". The trial uses the same rule as the
+anvil: a free socket, or a better version of a core already in the deck.
+
+Colour and efficiency cores change card values, so the trial's scores show
+what the core would really give. Cores with a condition on the layout, such as
+a Bounty core's "at least 12 resource cards", add a **Core Conditions Met**
+attribute: raise its weight, or mark the resource cards as required, to make
+the search meet it.
+
+A trial is a what-if: **Apply** is off for it. Socket the core at an anvil,
+**Rescan**, and optimize the deck itself. Cores that pick their slots at random
+when socketed (the deck picker's tooltip says so) used one roll for the trial,
+so the real deck may differ.
 
 ## Applying a layout
 
@@ -81,22 +143,25 @@ Select a suggestion for the deck in the binder's deck slot and click
 
 It cannot rearrange an equipped deck or one in your inventory, and it cannot
 take cards out of your other decks; put the deck in the binder's slot first.
+It never puts cores into sockets, so a core trial cannot be applied.
 After applying, the binder's storage has changed, so flip through its pages
 again before the next run.
 
 ## How the score works
 
 Attribute totals come from the Vault mod's own deck code, so scalers,
-conditions, greed cards and deck modifiers behave as in the game. Each total is
-divided by the largest value any single one of your cards gives for that
-attribute, multiplied by its weight, and summed. So with all weights at 1,
-one point is roughly "one best card's worth" of any attribute.
+conditions, greed cards and deck cores behave as in the game. Each total is
+cut down to its cap if it has one, divided by the largest value any single one
+of your cards gives for that attribute, multiplied by its weight, and summed.
+So with all weights at 1, one point is roughly "one best card's worth" of any
+attribute.
 
 Cards that give no stat themselves (resource and task cards) score nothing by
-default. Raise the weight of **Cards With No Stat** to keep them in.
+default. Require them (see [Required cards](#required-cards)), or raise the
+weight of **Cards With No Stat** to favour them in general.
 
-Settings are saved in `config/vhdeckoptimizer.json` (`weights`, `defaultWeight`,
-`iterations`, `restarts`).
+Settings are saved in `config/vhdeckoptimizer.json` (`weights`, `caps`,
+`defaultWeight`, `iterations`, `restarts`).
 
 ## Building
 
@@ -132,9 +197,10 @@ rebuild, and fix that one file if it no longer compiles.
 
 ## Source layout
 
-- `search/` – the annealing search; plain Java, unit tested.
+- `search/` – the annealing search (with required cards) and the scoring (with
+  caps); plain Java, unit tested.
 - `vault/VaultAdapter.java` – the only Vault-facing code.
-- `client/` – the binder button, the card cache and the panel.
+- `client/` – the binder button, the card cache, the required cards and the panel.
 
 ## Licence
 
