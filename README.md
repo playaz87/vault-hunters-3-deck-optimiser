@@ -180,12 +180,15 @@ are never part of this repository or of the built mod.
 
 ## Releases
 
-GitHub Actions builds and tests every push. Pushing a tag publishes a release
-with the JAR attached, versioned from the tag:
+GitHub Actions builds and tests every push. Merging a change to the mod into
+`main` publishes a release with the JAR attached, one patch version above the
+last release. Changes to only the workflows, README or licence do not release.
+
+For a minor or major version, push a tag by hand; later merges count up from it:
 
 ```
-git tag v1.0.1
-git push origin v1.0.1
+git tag v1.1.0
+git push origin v1.1.0
 ```
 
 ## When the pack updates
