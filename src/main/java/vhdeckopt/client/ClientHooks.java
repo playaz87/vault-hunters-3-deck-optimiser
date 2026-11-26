@@ -8,17 +8,18 @@ import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.chat.TextComponent;
+import net.minecraft.world.inventory.Slot;
 import net.minecraftforge.client.event.ScreenEvent;
 import net.minecraftforge.event.TickEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 import vhdeckopt.vault.VaultAdapter;
 
 /**
- * Hooks the Card Binder screen from outside: draws one extra button on it and,
- * while the optimizer is open, draws that instead of the binder and swallows
- * input. The binder container itself stays open and untouched. The only thing
- * ever sent to the server is the Apply request, and only when the player
- * confirms it.
+ * Hooks the Card Binder screen from outside: draws one extra button on it,
+ * outlines required cards and lets Alt+click mark them, and, while the
+ * optimizer is open, draws that instead of the binder and swallows input. The
+ * binder container itself stays open and untouched. The only thing ever sent
+ * to the server is the Apply request, and only when the player confirms it.
  */
 public final class ClientHooks {
     private static final int BUTTON_X = 227;
@@ -26,6 +27,7 @@ public final class ClientHooks {
     private static final int BUTTON_W = 28;
     private static final int BUTTON_H = 13;
     private static final int KEY_ESCAPE = 256;
+    static final int REQUIRED_COLOUR = 0xFFFFC000;
 
     private static final BinderCache CACHE = new BinderCache();
     private static OptimizerOverlay overlay;
@@ -85,6 +87,7 @@ public final class ClientHooks {
             overlay.render(pose, screen, event.getMouseX(), event.getMouseY());
             return;
         }
+        drawRequiredOutlines(pose, screen);
         int x = screen.getGuiLeft() + BUTTON_X;
         int y = screen.getGuiTop() + BUTTON_Y;
         boolean hover = overButton(screen, event.getMouseX(), event.getMouseY());
@@ -96,9 +99,40 @@ public final class ClientHooks {
         if (hover) {
             List<Component> lines = List.of(
                 new TextComponent("Find the best card layout"),
-                new TextComponent("§7Shows suggestions only; moves nothing."));
+                new TextComponent("§7Shows suggestions only; moves nothing."),
+                new TextComponent("§7Alt+click a card to require it in every layout"),
+                new TextComponent("§7(gold outline). " + RequiredCards.size() + " required now."));
             screen.renderComponentTooltip(pose, lines, event.getMouseX(), event.getMouseY());
         }
+    }
+
+    /** A gold outline around every required card on screen, drawn above the items. */
+    private static void drawRequiredOutlines(PoseStack pose, AbstractContainerScreen<?> screen) {
+        pose.pushPose();
+        pose.translate(0.0, 0.0, 300.0);
+        for (Slot slot : screen.getMenu().slots) {
+            if (slot.isActive() && RequiredCards.isRequired(slot.getItem())) {
+                int x = screen.getGuiLeft() + slot.x;
+                int y = screen.getGuiTop() + slot.y;
+                GuiComponent.fill(pose, x - 1, y - 1, x + 17, y, REQUIRED_COLOUR);
+                GuiComponent.fill(pose, x - 1, y + 16, x + 17, y + 17, REQUIRED_COLOUR);
+                GuiComponent.fill(pose, x - 1, y, x, y + 16, REQUIRED_COLOUR);
+                GuiComponent.fill(pose, x + 16, y, x + 17, y + 16, REQUIRED_COLOUR);
+            }
+        }
+        pose.popPose();
+    }
+
+    /** The shown slot under the mouse, or null. */
+    private static Slot slotAt(AbstractContainerScreen<?> screen, double mouseX, double mouseY) {
+        for (Slot slot : screen.getMenu().slots) {
+            int x = screen.getGuiLeft() + slot.x;
+            int y = screen.getGuiTop() + slot.y;
+            if (slot.isActive() && mouseX >= x && mouseX < x + 16 && mouseY >= y && mouseY < y + 16) {
+                return slot;
+            }
+        }
+        return null;
     }
 
     private static boolean overButton(AbstractContainerScreen<?> screen, double mouseX, double mouseY) {
@@ -123,6 +157,15 @@ public final class ClientHooks {
             overlay = new OptimizerOverlay(CACHE);
             overlay.start(screen.getMenu());
             event.setCanceled(true);
+        } else if (event.getButton() == 0 && Screen.hasAltDown()) {
+            // Alt+click marks a card as required; the click never reaches the binder.
+            Slot slot = slotAt(screen, event.getMouseX(), event.getMouseY());
+            String id = slot == null ? null : RequiredCards.id(slot.getItem());
+            if (id != null) {
+                OptimizerOverlay.click();
+                RequiredCards.toggle(id);
+                event.setCanceled(true);
+            }
         }
     }
 
@@ -151,7 +194,8 @@ public final class ClientHooks {
     @SubscribeEvent
     public static void onKeyPressed(ScreenEvent.KeyboardKeyPressedEvent.Pre event) {
         if (overlay != null && binder(event.getScreen()) != null) {
-            if (event.getKeyCode() == KEY_ESCAPE) {
+            // While a number is being typed, the overlay takes the keys (Escape cancels the edit).
+            if (!overlay.keyPressed(event.getKeyCode()) && event.getKeyCode() == KEY_ESCAPE) {
                 closeOverlay();
             }
             event.setCanceled(true);
@@ -168,6 +212,7 @@ public final class ClientHooks {
     @SubscribeEvent
     public static void onCharTyped(ScreenEvent.KeyboardCharTypedEvent.Pre event) {
         if (overlay != null && binder(event.getScreen()) != null) {
+            overlay.charTyped(event.getCodePoint());
             event.setCanceled(true);
         }
     }
